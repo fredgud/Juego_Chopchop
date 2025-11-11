@@ -1,0 +1,598 @@
+<!doctype html>  
+<html>
+<head>
+<meta charset="utf-8">
+<title>Chop Chop - Cerdito vs Duendes + Perrito + Checkpoints + Game Over + Godzilla</title>
+<style>
+  html,body{margin:0;padding:0;overflow:hidden;background:#111;}
+  #game{width:100vw;height:100vh;display:block;}
+  .hud{position:absolute;top:12px;left:12px;padding:10px 14px;
+    background:rgba(0,0,0,0.4);color:white;border-radius:10px;
+    backdrop-filter:blur(5px);font-family:Segoe UI;}
+  .bar{width:200px;height:12px;background:#333;border-radius:8px;margin-top:6px;}
+  .hp{height:100%;background:linear-gradient(90deg,#ff6b6b,#ff9e7d);width:100%;border-radius:8px;}
+  .energy{height:100%;background:linear-gradient(90deg,#3af,#6cf);width:100%;border-radius:8px;}
+  .icon{width:20px;height:20px;display:inline-block;vertical-align:middle;margin-right:5px;}
+  .heart{background:url('https://cdn-icons-png.flaticon.com/512/833/833472.png') center/cover no-repeat;}
+  .bolt{background:url('https://cdn-icons-png.flaticon.com/512/616/616490.png') center/cover no-repeat;}
+  .hint{position:absolute;top:12px;left:50%;transform:translateX(-50%);font-family:Segoe UI;color:#ddd;}
+  #levelBanner{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    font-family:Impact;font-size:70px;color:white;text-shadow:0 0 12px black;opacity:0;transition:opacity 1s;}
+  #map{position:absolute;left:12px;bottom:12px;width:160px;height:160px;
+    background:#000a;border:3px solid #2af;border-radius:50%;overflow:hidden;}
+  #mapCanvas{width:100%;height:100%;}
+  #gameOver{
+    position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    font-family:Impact;font-size:80px;color:red;text-shadow:0 0 20px black;
+    opacity:0;transition:opacity 1s;pointer-events:none;
+  }
+  #credits{
+    position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    font-family:Segoe UI;font-size:24px;color:white;text-align:center;
+    opacity:0;transition:opacity 1s;pointer-events:none;
+    background:rgba(0,0,0,0.7);padding:30px;border-radius:15px;
+    width:80%;max-width:600px;
+  }
+  #bossHealth{position:absolute;top:100px;left:50%;transform:translateX(-50%);
+    width:300px;height:20px;background:#333;border-radius:10px;display:none;}
+  #bossHealthBar{height:100%;background:linear-gradient(90deg,#ff3333,#ff6666);width:100%;border-radius:10px;}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div class="hud">
+  <div><span class="icon heart"></span>Vida:</div>
+  <div class="bar"><div id="hpbar" class="hp"></div></div>
+  <div><span class="icon bolt"></span>Energía:</div>
+  <div class="bar"><div id="enbar" class="energy"></div></div>
+  Puntos: <span id="score">0</span>
+</div>
+
+<div id="bossHealth">
+  <div>GODZILLA</div>
+  <div class="bar"><div id="bossHealthBar" class="hp"></div></div>
+</div>
+
+<div class="hint">WASD mover • Espacio atacar • P pistola • R reiniciar</div>
+<div id="levelBanner"></div>
+<div id="map"><canvas id="mapCanvas"></canvas></div>
+<div id="gameOver">GAME OVER</div>
+<div id="credits"></div>
+
+<script src="https://unpkg.com/three@0.152.2/build/three.min.js"></script>
+<script>
+const LEVELS=[
+ {bg:0xcfe8ff,ground:0xffffff,fog:0xdff5ff,text:"NIVEL 1 - NIEVE",flagColor:0x77bfff,goal:10},
+ {bg:0xaee49b,ground:0x4a8d37,fog:0x88c57f,text:"NIVEL 2 - BOSQUE",flagColor:0x00ff00,goal:20},
+ {bg:0x6a7a89,ground:0x7b5b3d,fog:0x4d5b66,text:"NIVEL 3 - MONTAÑA",flagColor:0xffcc66,goal:30}
+];
+let level=0;
+let kills=0;
+const levelBanner=document.getElementById("levelBanner");
+const gameOverEl=document.getElementById("gameOver");
+const creditsEl=document.getElementById("credits");
+const bossHealthEl=document.getElementById("bossHealth");
+const bossHealthBar=document.getElementById("bossHealthBar");
+
+const canvas=document.getElementById("game");
+const renderer=new THREE.WebGLRenderer({canvas,antialias:true});
+renderer.setSize(innerWidth,innerHeight);
+renderer.shadowMap.enabled=true;
+const scene=new THREE.Scene();
+const camera=new THREE.PerspectiveCamera(55,innerWidth/innerHeight,0.1,2000);
+camera.position.set(0,6,12);
+scene.add(new THREE.HemisphereLight(0xffffff,0x222222,1));
+const light=new THREE.DirectionalLight(0xffffff,1);
+light.position.set(5,10,5);light.castShadow=true;scene.add(light);
+
+let ground;
+const checkpoints=[];
+
+function makeCheckpoint(x,z,color){
+  const flag=new THREE.Group();
+  const pole=new THREE.Mesh(new THREE.CylinderGeometry(0.1,0.1,2,8),new THREE.MeshStandardMaterial({color:0x444}));
+  const cloth=new THREE.Mesh(new THREE.BoxGeometry(0.9,0.5,0.05),new THREE.MeshStandardMaterial({color}));
+  cloth.position.set(0.45,0.75,0);
+  flag.add(pole,cloth);
+  flag.position.set(x,1,z);
+  scene.add(flag);
+  checkpoints.push(flag);
+}
+
+function clearCheckpoints(){
+  checkpoints.forEach(f=>scene.remove(f));
+  checkpoints.length=0;
+}
+
+function setLevel(i){
+  level=i;
+  kills=0;
+  scene.background=new THREE.Color(LEVELS[i].bg);
+  scene.fog=new THREE.FogExp2(LEVELS[i].fog,0.015);
+  if(ground)scene.remove(ground);
+  ground=new THREE.Mesh(new THREE.PlaneGeometry(80,80),
+    new THREE.MeshStandardMaterial({color:LEVELS[i].ground}));
+  ground.rotation.x=-Math.PI/2;ground.receiveShadow=true;
+  scene.add(ground);
+  clearCheckpoints();
+  // tres checkpoints por nivel
+  makeCheckpoint(-10,10,LEVELS[i].flagColor);
+  makeCheckpoint(10,-10,LEVELS[i].flagColor);
+  makeCheckpoint(0,15,LEVELS[i].flagColor);
+  levelBanner.innerText=LEVELS[i].text;
+  levelBanner.style.opacity=1;
+  setTimeout(()=>levelBanner.style.opacity=0,1500);
+  
+  // Si es el nivel 3, spawnear a Godzilla
+  if(i === 2) {
+    spawnGodzilla();
+    bossHealthEl.style.display = 'block';
+  } else {
+    bossHealthEl.style.display = 'none';
+  }
+}
+setLevel(0);
+
+// CERDITO
+const player=new THREE.Group(); 
+player.position.y = 0.8; // 👈 Elevado para que no se vea hundido
+scene.add(player);
+(function makePig(){
+  const m=new THREE.MeshStandardMaterial({color:0xffb7c5});
+  const body=new THREE.Mesh(new THREE.SphereGeometry(1,22,18),m);
+  body.scale.set(1.2,0.9,1.3); player.add(body);
+  const head=new THREE.Mesh(new THREE.SphereGeometry(0.65,18,14),m);
+  head.position.set(0,0.6,1.1); player.add(head);
+  const snout=new THREE.Mesh(new THREE.CylinderGeometry(0.3,0.32,0.45,14),
+    new THREE.MeshStandardMaterial({color:0xff7fab}));
+  snout.rotation.x=Math.PI/2; snout.position.set(0,0.6,1.55); player.add(snout);
+  const eye= x => new THREE.Mesh(new THREE.SphereGeometry(0.09,8,6),
+    new THREE.MeshBasicMaterial({color:0x111}));
+  let e1=eye(),e2=eye(); e1.position.set(-0.25,0.75,1.3); e2.position.set(0.25,0.75,1.3);
+  player.add(e1,e2);
+})();
+
+// OREJAS
+(function addPigEars(){
+  const earMat=new THREE.MeshStandardMaterial({color:0xffb7c5});
+  function ear(x){
+    const e=new THREE.Mesh(new THREE.ConeGeometry(0.35,0.7,8),earMat);
+    e.position.set(x,1.3,0.6); e.rotation.z=x>0?-0.8:0.8; return e;
+  }
+  player.add(ear(0.7),ear(-0.7));
+})();
+
+// ESPADA
+const swordMat=new THREE.MeshStandardMaterial({
+  color:0x00bfff,emissive:0x00aaff,emissiveIntensity:1.5,metalness:0.9,roughness:0.2});
+const sword=new THREE.Mesh(new THREE.BoxGeometry(0.18,1.4,0.18),swordMat);
+sword.position.set(1.1,0.1,0.2);sword.rotation.z=-0.55;player.add(sword);
+
+// PISTOLA DE JUGUETE (lado izquierdo)
+const gunGroup = new THREE.Group();
+(function makeToyGun(){
+  // Cuerpo principal de la pistola (color naranja brillante)
+  const gunBody = new THREE.Mesh(
+    new THREE.BoxGeometry(0.4, 0.15, 1.2),
+    new THREE.MeshStandardMaterial({color: 0xff6600})
+  );
+  gunBody.position.set(0, 0, 0.6);
+  gunGroup.add(gunBody);
+  
+  // Empuñadura (color azul brillante)
+  const grip = new THREE.Mesh(
+    new THREE.BoxGeometry(0.25, 0.4, 0.3),
+    new THREE.MeshStandardMaterial({color: 0x0066ff})
+  );
+  grip.position.set(0, -0.2, 0.2);
+  gunGroup.add(grip);
+  
+  // Cañón (color amarillo)
+  const barrel = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.05, 0.05, 0.8, 8),
+    new THREE.MeshStandardMaterial({color: 0xffff00})
+  );
+  barrel.rotation.x = Math.PI/2;
+  barrel.position.set(0, 0, 1.2);
+  gunGroup.add(barrel);
+  
+  // Gatillo (color rojo)
+  const trigger = new THREE.Mesh(
+    new THREE.BoxGeometry(0.08, 0.15, 0.05),
+    new THREE.MeshStandardMaterial({color: 0xff0000})
+  );
+  trigger.position.set(0, -0.1, 0.45);
+  gunGroup.add(trigger);
+})();
+gunGroup.position.set(-1.1, 0.1, 0.2);
+gunGroup.rotation.z = 0.55;
+player.add(gunGroup);
+
+// PERRITO
+const dog=new THREE.Group();scene.add(dog);
+(function(){
+  const mat=new THREE.MeshStandardMaterial({color:0xffe9c9});
+  const body=new THREE.Mesh(new THREE.CylinderGeometry(0.4,0.5,1.2,10),mat);
+  body.rotation.z=Math.PI/2;
+  const head=new THREE.Mesh(new THREE.SphereGeometry(0.35,14,12),mat);
+  head.position.set(0.6,0.2,0);
+  const ear=x=>{const e=new THREE.Mesh(new THREE.ConeGeometry(0.1,0.3,8),mat);
+    e.position.set(0.7,0.45,x);e.rotation.x=Math.PI/2;return e;};
+  const leg=(x,z)=>{const l=new THREE.Mesh(new THREE.CylinderGeometry(0.08,0.08,0.4,8),mat);
+    l.position.set(x,-0.4,z);return l;};
+  dog.add(body,head,ear(0.18),ear(-0.18),leg(0.25,0.3),leg(-0.25,0.3),leg(0.25,-0.3),leg(-0.25,-0.3));
+})();
+dog.userData={hp:100,regen:5,atkCooldown:0};
+
+// ENEMIGOS
+const enemies=[];const enemyGroup=new THREE.Group();scene.add(enemyGroup);
+function makeGoblin(){
+  const g=new THREE.Group();
+  const gm=new THREE.MeshStandardMaterial({color:0x5cc36b});
+  const body=new THREE.Mesh(new THREE.SphereGeometry(0.7,14,12),gm);g.add(body);
+  const head=new THREE.Mesh(new THREE.SphereGeometry(0.55,14,10),gm);head.position.set(0,0.8,0.3);g.add(head);
+  const ear=x=>{let e=new THREE.Mesh(new THREE.ConeGeometry(0.25,0.55,8),gm);
+    e.position.set(x,1,0.1);e.rotation.z=x>0?-0.4:0.4;return e;};
+  g.add(ear(0.55),ear(-0.55));return g;
+}
+
+// GODZILLA
+let godzilla = null;
+function spawnGodzilla() {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({color: 0x4a7c59});
+  
+  // Cuerpo principal
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(2, 3, 8, 12), mat);
+  body.position.y = 4;
+  g.add(body);
+  
+  // Cabeza
+  const head = new THREE.Mesh(new THREE.BoxGeometry(2.5, 1.5, 3), mat);
+  head.position.set(0, 8.5, -1);
+  g.add(head);
+  
+  // Ojos
+  const eyeMat = new THREE.MeshBasicMaterial({color: 0xff0000});
+  const eye1 = new THREE.Mesh(new THREE.SphereGeometry(0.3, 8, 6), eyeMat);
+  const eye2 = new THREE.Mesh(new THREE.SphereGeometry(0.3, 8, 6), eyeMat);
+  eye1.position.set(-0.5, 8.8, -2.2);
+  eye2.position.set(0.5, 8.8, -2.2);
+  g.add(eye1, eye2);
+  
+  // Cola
+  const tail = new THREE.Mesh(new THREE.ConeGeometry(1, 5, 8), mat);
+  tail.position.set(0, 4, 4);
+  tail.rotation.x = Math.PI/2;
+  g.add(tail);
+  
+  // Patas
+  const leg = (x, z) => {
+    const l = new THREE.Mesh(new THREE.CylinderGeometry(0.8, 0.8, 2, 8), mat);
+    l.position.set(x, 1, z);
+    return l;
+  };
+  g.add(leg(-1.5, -1), leg(1.5, -1), leg(-1.5, 1), leg(1.5, 1));
+  
+  // Espinas en la espalda
+  for(let i = 0; i < 6; i++) {
+    const spine = new THREE.Mesh(new THREE.ConeGeometry(0.4, 1.2, 6), mat);
+    spine.position.set(0, 6, -2 + i * 0.8);
+    spine.rotation.x = Math.PI/2;
+    g.add(spine);
+  }
+  
+  g.position.set(0, 0, 0);
+  g.userData = {
+    hp: 250, // Cambiado a 250 para que requiera 25 golpes (10 de daño por golpe)
+    maxHp: 250,
+    attackCooldown: 0,
+    attackRange: 5,
+    damage: 40,
+    speed: 1.5
+  };
+  
+  scene.add(g);
+  godzilla = g;
+  bossHealthBar.style.width = "100%";
+}
+
+// PROYECTILES
+const bullets = [];
+function shootBullet() {
+  if (energy < 15) return;
+  
+  energy -= 15;
+  
+  const bullet = new THREE.Mesh(
+    new THREE.SphereGeometry(0.1, 8, 6),
+    new THREE.MeshBasicMaterial({color: 0xffff00})
+  );
+  
+  // HACER VISIBLE LA BALA - AÑADIR ESTAS LÍNEAS:
+  bullet.visible = true;
+  bullet.castShadow = true;
+  bullet.receiveShadow = true;
+  
+  // Posición inicial de la bala (delante del jugador)
+  const direction = new THREE.Vector3();
+  camera.getWorldDirection(direction);
+  bullet.position.copy(player.position);
+  bullet.position.y += 1; // Un poco más arriba
+  
+  bullet.userData = {
+    velocity: direction.multiplyScalar(20), // Velocidad de la bala
+    lifetime: 2 // Tiempo de vida en segundos
+  };
+  
+  scene.add(bullet);
+  bullets.push(bullet);
+  
+  // EFECTO VISUAL ADICIONAL - AÑADIR ESTO TAMBIÉN:
+  // Crear un pequeño efecto de destello cuando se dispara
+  const flash = new THREE.PointLight(0xffff00, 1, 2);
+  flash.position.copy(bullet.position);
+  scene.add(flash);
+  setTimeout(() => scene.remove(flash), 100);
+}
+
+function spawnEnemy(){
+  const g=makeGoblin();
+  const a=Math.random()*Math.PI*2;const d=14+Math.random()*8;
+  g.position.set(Math.cos(a)*d,0,Math.sin(a)*d);
+  g.userData.s=1+Math.random()*0.5;
+  enemies.push(g);enemyGroup.add(g);
+}
+
+function spawnGuts(pos){
+  for(let i=0;i<8;i++){
+    const p=new THREE.Mesh(new THREE.SphereGeometry(0.08,6,4),
+      new THREE.MeshStandardMaterial({color:0xff7272}));
+    p.position.copy(pos);scene.add(p);
+    let dx=(Math.random()-0.5)*3,dy=Math.random()*2,dz=(Math.random()-0.5)*3;
+    let t=0;let f=()=>{t+=0.016;
+      p.position.x+=dx*0.02;p.position.y+=dy*0.02;p.position.z+=dz*0.02;
+      dy-=0.09;if(t<1)requestAnimationFrame(f);else scene.remove(p);};f();
+  }
+}
+
+// VARIABLES
+const keys={w:0,a:0,s:0,d:0};
+let camRot=0.4,isAtk=false,atkT=0,gameOver=false;
+let score=0,health=100,energy=100;
+const hpbar=document.getElementById("hpbar"),enbar=document.getElementById("enbar"),scoreEl=document.getElementById("score");
+const clock=new THREE.Clock();
+
+addEventListener("keydown",e=>{
+  const k=e.key.toLowerCase();
+  if(k in keys)keys[k]=1;
+  if(k===" "&&energy>=20&&!gameOver){isAtk=true;atkT=0;energy-=20;}
+  if(k==="p"&&energy>=15&&!gameOver){shootBullet();}
+  if(k==="r")reset();
+});
+addEventListener("keyup",e=>{if(e.key.toLowerCase() in keys)keys[e.key.toLowerCase()]=0;});
+canvas.addEventListener("mousemove",e=>{camRot+=(e.movementX)*0.003;});
+
+function reset(){
+  enemies.forEach(e=>enemyGroup.remove(e));enemies.length=0;
+  bullets.forEach(b=>scene.remove(b));bullets.length=0;
+  if(godzilla) {
+    scene.remove(godzilla);
+    godzilla = null;
+  }
+  score=0;health=100;energy=100;dog.userData.hp=100;
+  player.position.set(0,0.8,0); // 👈 Elevado también en reset
+  dog.position.set(-1,0.3,-1);
+  gameOver=false;gameOverEl.style.opacity=0;
+  creditsEl.style.opacity = 0;
+  setLevel(0);
+}
+
+function nextLevel(){
+  if(level<LEVELS.length-1){
+    setLevel(level+1);
+  } else {
+    // Juego completado, mostrar créditos
+    showCredits();
+  }
+}
+
+function showCredits() {
+  creditsEl.innerHTML = `
+    <h1>¡FELICIDADES!</h1>
+    <h2>Has completado el juego</h2>
+    <p>Hecho por los chopchops:</p>
+    <p>Mamani Lipa Jhoel Briam</p>
+    <p>Mendez Alvarez Ruddy</p>
+    <p>Yana Ramos Jhojan Abel</p>
+    <p>Yarahuaman Ybarra Martín Donato</p>
+    <p>Porcel landeo Fredy</p>
+    <p>Presiona R para reiniciar</p>
+  `;
+  creditsEl.style.opacity = 1;
+}
+
+function update(dt){
+  if(gameOver)return;
+  if(health<=0){health=0;gameOver=true;gameOverEl.style.opacity=1;return;}
+  if(Math.random()<dt*0.8 && level < 2)spawnEnemy(); // No spawnear enemigos normales en nivel 3
+  
+  let vx=keys.d-keys.a,vz=keys.s-keys.w;const L=Math.hypot(vx,vz);
+  if(L>0){vx/=L;vz/=L;}
+  player.position.x+=vx*4*dt;player.position.z+=vz*4*dt;
+  if(L>0)player.rotation.y=Math.atan2(vx,vz);
+  if(isAtk){
+    atkT+=dt;
+    sword.rotation.z=-0.5+Math.sin((atkT/0.25)*Math.PI)*1.6;
+    if(atkT>0.25)isAtk=false,sword.rotation.z=-0.5;
+    enemies.forEach((g,i)=>{
+      if(g.position.distanceTo(player.position)<2){
+        spawnGuts(g.position);score+=10;kills++;
+        enemyGroup.remove(g);enemies.splice(i,1);
+      }
+    });
+    
+    // Ataque a Godzilla con espada
+    if(godzilla && player.position.distanceTo(godzilla.position) < 4) {
+      godzilla.userData.hp -= 10; // 10 de daño por golpe
+      bossHealthBar.style.width = (godzilla.userData.hp / godzilla.userData.maxHp * 100) + "%";
+      
+      if(godzilla.userData.hp <= 0) {
+        // Godzilla derrotado
+        spawnGuts(godzilla.position);
+        scene.remove(godzilla);
+        godzilla = null;
+        bossHealthEl.style.display = 'none';
+        kills = LEVELS[level].goal; // Forzar cambio de nivel
+      }
+    }
+  }
+  
+  // Actualizar balas
+  bullets.forEach((bullet, index) => {
+    bullet.position.add(bullet.userData.velocity.clone().multiplyScalar(dt));
+    bullet.userData.lifetime -= dt;
+    
+    // Colisión con enemigos normales
+    enemies.forEach((enemy, enemyIndex) => {
+      if (bullet.position.distanceTo(enemy.position) < 1.5) {
+        spawnGuts(enemy.position);
+        score += 10;
+        kills++;
+        enemyGroup.remove(enemy);
+        enemies.splice(enemyIndex, 1);
+        scene.remove(bullet);
+        bullets.splice(index, 1);
+      }
+    });
+    
+    // Colisión con Godzilla
+    if (godzilla && bullet.position.distanceTo(godzilla.position) < 4) {
+      godzilla.userData.hp -= 10; // 10 de daño por bala
+      bossHealthBar.style.width = (godzilla.userData.hp / godzilla.userData.maxHp * 100) + "%";
+      
+      if(godzilla.userData.hp <= 0) {
+        // Godzilla derrotado
+        spawnGuts(godzilla.position);
+        scene.remove(godzilla);
+        godzilla = null;
+        bossHealthEl.style.display = 'none';
+        kills = LEVELS[level].goal; // Forzar cambio de nivel
+      }
+      
+      scene.remove(bullet);
+      bullets.splice(index, 1);
+    }
+    
+    // Eliminar bala si se acaba su tiempo de vida
+    if (bullet.userData.lifetime <= 0) {
+      scene.remove(bullet);
+      bullets.splice(index, 1);
+    }
+  });
+  
+  const pdx=player.position.x-dog.position.x;
+  const pdz=player.position.z-dog.position.z;
+  const pd=Math.hypot(pdx,pdz);
+  if(pd>1){dog.position.x+=(pdx/pd)*3*dt;dog.position.z+=(pdz/pd)*3*dt;dog.lookAt(player.position);}
+  dog.userData.atkCooldown-=dt;
+  enemies.forEach((g,i)=>{
+    const d=g.position.distanceTo(dog.position);
+    if(d<1.5&&dog.userData.atkCooldown<=0){
+      spawnGuts(g.position);
+      enemyGroup.remove(g);enemies.splice(i,1);score+=8;kills++;
+      dog.userData.atkCooldown=0.8;
+    }
+  });
+  enemies.forEach((g,i)=>{
+    const dx=player.position.x-g.position.x,dz=player.position.z-g.position.z;
+    const d=Math.hypot(dx,dz);
+    g.position.x+=dx/d*g.userData.s*dt;g.position.z+=dz/d*g.userData.s*dt;
+    if(d<1.2){health-=25;enemyGroup.remove(g);enemies.splice(i,1);}
+  });
+
+  // ✅ Checkpoints: regeneran toda la vida y energía
+  checkpoints.forEach(flag=>{
+    if(player.position.distanceTo(flag.position)<2){
+      health = 100;
+      energy = 100;
+    }
+  });
+
+  // Sistema de cambio de nivel
+  if(kills >= LEVELS[level].goal){
+    nextLevel();
+  }
+
+  // Comportamiento de Godzilla
+  if(godzilla) {
+    const dx = player.position.x - godzilla.position.x;
+    const dz = player.position.z - godzilla.position.z;
+    const distance = Math.hypot(dx, dz);
+    
+    // Perseguir al jugador
+    if(distance > 3) {
+      godzilla.position.x += (dx/distance) * godzilla.userData.speed * dt;
+      godzilla.position.z += (dz/distance) * godzilla.userData.speed * dt;
+    }
+    
+    // Atacar al jugador
+    godzilla.userData.attackCooldown -= dt;
+    if(distance < godzilla.userData.attackRange && godzilla.userData.attackCooldown <= 0) {
+      health -= godzilla.userData.damage;
+      godzilla.userData.attackCooldown = 2; // 2 segundos entre ataques
+    }
+    
+    // Hacer que Godzilla mire hacia el jugador
+    godzilla.lookAt(player.position.x, godzilla.position.y, player.position.z);
+  }
+
+  energy=Math.min(100,energy+10*dt);
+  dog.userData.hp=Math.min(100,dog.userData.hp+dog.userData.regen*dt);
+  hpbar.style.width=Math.max(0,health)+"%";enbar.style.width=Math.max(0,energy)+"%";
+  scoreEl.textContent=score;
+  camera.position.set(player.position.x+Math.sin(camRot)*10,6,player.position.z+Math.cos(camRot)*10);
+  camera.lookAt(player.position.x,1.2,player.position.z);
+  updateMap();
+}
+
+// MINI MAPA
+const mapCanvas=document.getElementById("mapCanvas");
+const mctx=mapCanvas.getContext("2d");
+function updateMap(){
+  const size=160;mapCanvas.width=size;mapCanvas.height=size;
+  const scale=4;mctx.fillStyle="#000";mctx.fillRect(0,0,size,size);
+  mctx.strokeStyle="#2af";mctx.lineWidth=2;
+  mctx.beginPath();mctx.arc(size/2,size/2,size/2-2,0,Math.PI*2);mctx.stroke();
+  mctx.fillStyle="#0ff";mctx.beginPath();mctx.arc(size/2,size/2,5,0,Math.PI*2);mctx.fill();
+  mctx.fillStyle="#ff0";const dx=dog.position.x-player.position.x,dz=dog.position.z-player.position.z;
+  mctx.beginPath();mctx.arc(size/2+dx*scale,size/2+dz*scale,4,0,Math.PI*2);mctx.fill();
+  mctx.fillStyle="#f00";enemies.forEach(g=>{
+    const dx=g.position.x-player.position.x,dz=g.position.z-player.position.z;
+    const x=size/2+dx*scale,y=size/2+dz*scale;
+    if(x>0&&x<size&&y>0&&y<size){mctx.beginPath();mctx.arc(x,y,4,0,Math.PI*2);mctx.fill();}
+  });
+  
+  // Mostrar a Godzilla en el minimapa
+  if(godzilla) {
+    mctx.fillStyle="#ff00ff";
+    const dx=godzilla.position.x-player.position.x,dz=godzilla.position.z-player.position.z;
+    const x=size/2+dx*scale,y=size/2+dz*scale;
+    if(x>0&&x<size&&y>0&&y<size){
+      mctx.beginPath();mctx.arc(x,y,6,0,Math.PI*2);mctx.fill();
+    }
+  }
+}
+
+function loop(){
+  requestAnimationFrame(loop);
+  update(Math.min(0.05,clock.getDelta()));
+  renderer.render(scene,camera);
+}
+loop();
+onresize=()=>{renderer.setSize(innerWidth,innerHeight);
+  camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();}
+</script>
+</body>
+</html>
